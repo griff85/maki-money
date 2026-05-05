@@ -1,0 +1,7 @@
+accounts.json
+__pycache__/
+*.pyc
+*.pyo
+build/
+dist/
+*.spec

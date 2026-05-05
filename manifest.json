@@ -1,0 +1,5 @@
+{
+  "plugins": [
+    {"file": "tile_game.py", "version": "1.0.0"}
+  ]
+}
