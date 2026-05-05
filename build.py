@@ -18,7 +18,7 @@ def run(cmd):
 
 # ── 1. Compile ────────────────────────────────────────────────────────────────
 print("=== Compiling with PyInstaller ===")
-run([sys.executable, "-m", "PyInstaller", "--clean", "MakiBot.spec"])
+run([sys.executable, "-m", "PyInstaller", "--clean", "-y", "MakiBot.spec"])
 
 # ── 2. Copy runtime files ─────────────────────────────────────────────────────
 print("\n=== Copying runtime files ===")

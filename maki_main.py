@@ -6,11 +6,16 @@ import threading
 import importlib.util
 import urllib.request
 import tkinter as tk
-from tkinter import ttk, scrolledtext
+from tkinter import ttk
+
+# Ensure playwright is importable from dynamically loaded plugins when frozen
+import playwright
+import playwright.sync_api
 
 if getattr(sys, 'frozen', False):
-    _base = os.path.dirname(sys.executable)
-    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", os.path.join(_base, "browsers"))
+    # Point playwright's driver at the bundled node.exe inside _internal/
+    _driver = os.path.join(sys._MEIPASS, "playwright", "driver", "node.exe")
+    os.environ.setdefault("PLAYWRIGHT_DRIVER_PATH", _driver)
 
 GITHUB_USER   = "griff85"
 GITHUB_REPO   = "maki-money"
@@ -26,14 +31,84 @@ class MakiApp:
     def __init__(self, root):
         self.root = root
         self.root.title("MakiBot")
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
+        self.root.minsize(500, 400)
 
         self._log_queue = queue.Queue()
+        self._apply_dark_theme()
         self._build_ui()
         self._set_icon()
         self._poll_log()
 
         threading.Thread(target=self._update_then_load, daemon=True).start()
+
+    def _apply_dark_theme(self):
+        BG      = "#141414"
+        BG2     = "#2d2d2d"
+        BG3     = "#3c3c3c"
+        FG      = "#d4d4d4"
+        BORDER  = "#1a2a4a"
+        ACCENT  = "#2a4a7a"
+
+        self.root.configure(bg=BG)
+
+        style = ttk.Style(self.root)
+        style.theme_use("clam")
+
+        style.configure(".",
+            background=BG, foreground=FG,
+            bordercolor=BORDER, darkcolor=BG, lightcolor=BG2,
+            troughcolor=BG3, focuscolor=ACCENT, insertcolor=FG,
+        )
+        style.configure("TFrame", background=BG)
+        style.configure("TLabel", background=BG, foreground=FG)
+        style.configure("TLabelframe", background=BG, foreground=FG, bordercolor=BORDER)
+        style.configure("TLabelframe.Label", background=BG, foreground=FG)
+        style.configure("TButton", background=BG3, foreground=FG,
+                        bordercolor=BORDER, relief="flat", padding=4)
+        style.map("TButton",
+            background=[("active", BG2), ("disabled", "#1e1e1e")],
+            foreground=[("disabled", "#4a4a4a")],
+            bordercolor=[("disabled", "#2a3a5a")],
+        )
+        style.configure("TCheckbutton", background=BG, foreground=FG)
+        style.map("TCheckbutton", background=[("active", BG)])
+        style.configure("TEntry", fieldbackground=BG3, foreground=FG,
+                        bordercolor=BORDER, insertcolor=FG)
+        style.configure("TSpinbox", fieldbackground=BG3, foreground=FG,
+                        bordercolor=BORDER, arrowcolor=FG, background=BG3)
+        style.configure("TCombobox", fieldbackground=BG3, foreground=FG,
+                        bordercolor=BORDER, arrowcolor=FG, background=BG3,
+                        selectbackground=BG3, selectforeground=FG)
+        style.map("TCombobox",
+            fieldbackground=[("readonly", BG3)],
+            selectbackground=[("readonly", BG3)],
+        )
+        style.configure("TNotebook", background=BG, bordercolor=BORDER)
+        style.configure("TNotebook.Tab", background="#252525", foreground="#888888",
+                        bordercolor=BORDER, padding=[12, 4])
+        style.map("TNotebook.Tab",
+            background=[("selected", "#272727")],
+            foreground=[("selected", "#b0b0b0")],
+            bordercolor=[("selected", "#1a2a4a")],
+            lightcolor=[("selected", "#272727")],
+            darkcolor=[("selected", "#272727")],
+        )
+
+        style.configure("Vertical.TScrollbar",
+            background="#2e2e2e", troughcolor="#1a1a1a",
+            arrowcolor="#555555", bordercolor="#1a1a1a",
+            darkcolor="#2e2e2e", lightcolor="#2e2e2e", relief="flat",
+        )
+        style.map("Vertical.TScrollbar",
+            background=[("active", "#3d3d3d"), ("pressed", "#4a4a4a")],
+        )
+
+        # Style the combobox dropdown listbox (plain tk widget, not ttk)
+        self.root.option_add("*TCombobox*Listbox.background", BG3)
+        self.root.option_add("*TCombobox*Listbox.foreground", FG)
+        self.root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
+        self.root.option_add("*TCombobox*Listbox.selectForeground", BG)
 
     def _set_icon(self):
         try:
@@ -50,12 +125,22 @@ class MakiApp:
         log_frame = ttk.LabelFrame(self.root, text="Log")
         log_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-        self.log_box = scrolledtext.ScrolledText(
-            log_frame, width=62, height=10, state="disabled",
+        text_container = tk.Frame(log_frame, bg="black")
+        text_container.pack(fill="both", expand=True, padx=4, pady=4)
+
+        scrollbar = ttk.Scrollbar(text_container, orient="vertical",
+                                  style="Vertical.TScrollbar")
+        scrollbar.pack(side="right", fill="y")
+
+        self.log_box = tk.Text(
+            text_container, width=62, height=10, state="disabled",
             wrap="word", font=("Consolas", 9),
             bg="black", fg="#00ff00", insertbackground="#00ff00",
+            relief="flat", borderwidth=0,
+            yscrollcommand=scrollbar.set,
         )
-        self.log_box.pack(fill="both", expand=True, padx=4, pady=4)
+        self.log_box.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.log_box.yview)
 
     def _log(self, message):
         self._log_queue.put(message)
@@ -145,6 +230,11 @@ class MakiApp:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        pass
     root = tk.Tk()
     app  = MakiApp(root)
     root.mainloop()
