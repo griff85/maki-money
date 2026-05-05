@@ -302,7 +302,7 @@ def play_tile_match(page, state):
 
 
 def run_bot(playwright: Playwright, username, password, collect_coins, aura_threshold, stop_event) -> None:
-    browser = playwright.chromium.launch(headless=False, args=["--mute-audio"])
+    browser = playwright.chromium.launch(channel="chrome", headless=False, args=["--mute-audio"])
     context = browser.new_context()
     page    = context.new_page()
 
