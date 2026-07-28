@@ -21,7 +21,7 @@ Then bump its version in `manifest.json` and push. The app picks it up automatic
 ```json
 {
   "plugins": [
-    {"file": "tile_game.py", "version": "1.1.0"}
+    {"file": "tile_game.py", "version": "1.1.1"}
   ]
 }
 ```
@@ -54,7 +54,7 @@ https://github.com/griff85/maki-money
 - **accounts.json** stores credentials (email→password dict) — gitignored, lives next to exe
 - **Collect Coins / Aura threshold** are live-adjustable mid-run via tkinter vars passed by reference
 - **Optional maximized Chrome launch** detects Windows `DISPLAY1`, moves Chrome there, and opens it maximized
-- **Automatic 7x gem multiplier** applies once per Coins phase whenever Aura is over 30
+- **Automatic 7x gem multiplier** applies and confirms once per Coins phase whenever Aura is over 30
 - **Shared log panel** sits outside the notebook — all plugins write to it via `log_fn`
 - **Stop is clean** — `threading.Event` checked every loop iteration and during reconnect waits
 

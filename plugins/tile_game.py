@@ -178,6 +178,12 @@ def apply_gem_7x_multiplier(page):
         ).first
         if btn.is_visible(timeout=500) and btn.is_enabled():
             btn.click()
+            continue_btn = page.get_by_role(
+                "button",
+                name="Continue",
+                exact=True,
+            ).first
+            continue_btn.click(timeout=3000)
             time.sleep(random.uniform(0.3, 0.6))
             print("[Coins] Applied gem 7x multiplier")
             return True
