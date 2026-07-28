@@ -15,6 +15,7 @@ TAB_NAME = "Tile Game"
 ROWS = 6
 COLS = 6
 AURA_SWITCH_TO_AURA = 1
+GEM_7X_AURA_THRESHOLD = 30
 
 ACCOUNTS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "accounts.json")
 
@@ -169,6 +170,22 @@ def switch_mode(page, mode):
         pass
 
 
+def apply_gem_7x_multiplier(page):
+    try:
+        btn = page.get_by_role(
+            "button",
+            name=re.compile(r"(^|\s)7\s*[x×](\s|$)", re.IGNORECASE),
+        ).first
+        if btn.is_visible(timeout=500) and btn.is_enabled():
+            btn.click()
+            time.sleep(random.uniform(0.3, 0.6))
+            print("[Coins] Applied gem 7x multiplier")
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def read_board(page):
     try:
         board = page.evaluate(_READ_BOARD_JS)
@@ -191,6 +208,58 @@ def read_stable_board(page):
 def click_tile(page, index):
     page.evaluate(_TAG_GRID_JS)
     page.locator('[data-maki-grid="1"] button').nth(index).click()
+
+
+def get_monitor_one_origin():
+    """Return the virtual-desktop coordinates of Windows display 1."""
+    if sys.platform != "win32":
+        return 0, 0
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class RECT(ctypes.Structure):
+            _fields_ = [
+                ("left", wintypes.LONG),
+                ("top", wintypes.LONG),
+                ("right", wintypes.LONG),
+                ("bottom", wintypes.LONG),
+            ]
+
+        class MONITORINFOEXW(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.DWORD),
+                ("rcMonitor", RECT),
+                ("rcWork", RECT),
+                ("dwFlags", wintypes.DWORD),
+                ("szDevice", wintypes.WCHAR * 32),
+            ]
+
+        origins = {}
+        monitor_enum_proc = ctypes.WINFUNCTYPE(
+            wintypes.BOOL,
+            wintypes.HANDLE,
+            wintypes.HDC,
+            ctypes.POINTER(RECT),
+            wintypes.LPARAM,
+        )
+
+        @monitor_enum_proc
+        def collect_monitor(monitor, _hdc, _rect, _data):
+            info = MONITORINFOEXW()
+            info.cbSize = ctypes.sizeof(info)
+            if ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                origins[info.szDevice.upper()] = (
+                    info.rcMonitor.left,
+                    info.rcMonitor.top,
+                )
+            return True
+
+        ctypes.windll.user32.EnumDisplayMonitors(None, None, collect_monitor, 0)
+        return origins.get(r"\\.\DISPLAY1", (0, 0))
+    except Exception:
+        return 0, 0
 
 
 # ── Match-3 solver ────────────────────────────────────────────────────────────
@@ -242,24 +311,28 @@ def find_best_move(board):
 
 # ── Main game loop ────────────────────────────────────────────────────────────
 
-def play_tile_match(page, state):
+def play_tile_match(page, state, collect_coins_var, aura_var):
     page.locator("div").filter(has_text=re.compile(r"^AURA\d+$")).nth(2).click()
     time.sleep(random.uniform(1.0, 1.5))
     disable_audio_if_enabled(page)
 
-    switch_mode(page, "Coins" if (state["collect_coins"] and state["in_coins_mode"]) else "Aura")
+    collect_coins = collect_coins_var.get()
+    switch_mode(page, "Coins" if (collect_coins and state["in_coins_mode"]) else "Aura")
+    state["gem_7x_applied"] = False
     no_move_streak = 0
 
     while not state["stop_event"].is_set():
+        collect_coins  = collect_coins_var.get()
+        aura_threshold = aura_var.get()
         aura           = get_aura_level(page)
-        aura_threshold = state["aura_switch_to_coins"]
 
-        if state["collect_coins"] and not state["in_coins_mode"] and aura >= aura_threshold:
+        if collect_coins and not state["in_coins_mode"] and aura >= aura_threshold:
             state["coins_at_coins_start"] = get_coin_count(page)
             switch_mode(page, "Coins")
             state["in_coins_mode"] = True
+            state["gem_7x_applied"] = False
 
-        elif state["collect_coins"] and state["in_coins_mode"] and aura <= AURA_SWITCH_TO_AURA:
+        elif collect_coins and state["in_coins_mode"] and aura <= AURA_SWITCH_TO_AURA:
             coins_now = get_coin_count(page)
             if state["coins_at_coins_start"] is not None and coins_now is not None:
                 state["cycles"].append(
@@ -270,10 +343,18 @@ def play_tile_match(page, state):
             state["in_coins_mode"]        = False
             state["coins_at_coins_start"] = None
             state["cycle_start"]          = time.time()
+            state["gem_7x_applied"]       = False
+
+        if (
+            state["in_coins_mode"]
+            and aura > GEM_7X_AURA_THRESHOLD
+            and not state["gem_7x_applied"]
+        ):
+            state["gem_7x_applied"] = apply_gem_7x_multiplier(page)
 
         possible = get_possible_moves(page)
         if possible is not None and possible == 0:
-            switch_mode(page, "Coins" if (state["collect_coins"] and state["in_coins_mode"]) else "Aura")
+            switch_mode(page, "Coins" if (collect_coins and state["in_coins_mode"]) else "Aura")
             time.sleep(1.0)
             continue
 
@@ -301,9 +382,22 @@ def play_tile_match(page, state):
         time.sleep(random.uniform(0.9, 1.3))
 
 
-def run_bot(playwright: Playwright, username, password, collect_coins, aura_threshold, stop_event) -> None:
-    browser = playwright.chromium.launch(channel="chrome", headless=False, args=["--mute-audio"])
-    context = browser.new_context()
+def run_bot(playwright: Playwright, username, password, collect_coins_var, aura_var,
+            maximize_browser, stop_event) -> None:
+    launch_args = ["--mute-audio"]
+    if maximize_browser:
+        monitor_x, monitor_y = get_monitor_one_origin()
+        launch_args.extend([
+            f"--window-position={monitor_x},{monitor_y}",
+            "--start-maximized",
+        ])
+
+    browser = playwright.chromium.launch(
+        channel="chrome",
+        headless=False,
+        args=launch_args,
+    )
+    context = browser.new_context(no_viewport=True) if maximize_browser else browser.new_context()
     page    = context.new_page()
 
     state = {
@@ -311,16 +405,15 @@ def run_bot(playwright: Playwright, username, password, collect_coins, aura_thre
         "cycles":               [],
         "in_coins_mode":        False,
         "coins_at_coins_start": None,
+        "gem_7x_applied":       False,
         "cycle_start":          time.time(),
-        "collect_coins":        collect_coins,
-        "aura_switch_to_coins": aura_threshold,
         "stop_event":           stop_event,
     }
 
     while not stop_event.is_set():
         try:
             login(page, username, password)
-            play_tile_match(page, state)
+            play_tile_match(page, state, collect_coins_var, aura_var)
         except KeyboardInterrupt:
             break
         except Exception as e:
@@ -417,6 +510,15 @@ class TileGameTab:
             row=1, column=1, sticky="w", padx=6, pady=4
         )
 
+        self.maximize_browser_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            settings,
+            text="Open Chrome maximized on monitor 1",
+            variable=self.maximize_browser_var,
+        ).grid(
+            row=2, column=0, columnspan=2, sticky="w", padx=6, pady=4
+        )
+
         # ── Controls ─────────────────────────────────────────────────────────
         ctrl = ttk.Frame(self.frame)
         ctrl.grid(row=2, column=0, pady=6)
@@ -463,14 +565,13 @@ class TileGameTab:
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
 
-        collect_coins  = self.collect_coins_var.get()
-        aura_threshold = self.aura_var.get()
-        self.log_fn(f"[Tile Game] Starting — aura threshold: {aura_threshold}, "
-                    f"coins: {'on' if collect_coins else 'off'}")
+        self.log_fn(f"[Tile Game] Starting — aura threshold: {self.aura_var.get()}, "
+                    f"coins: {'on' if self.collect_coins_var.get() else 'off'}")
 
+        maximize_browser = self.maximize_browser_var.get()
         self._bot_thread = threading.Thread(
             target=self._run_bot,
-            args=(email, password, collect_coins, aura_threshold),
+            args=(email, password, maximize_browser),
             daemon=True,
         )
         self._bot_thread.start()
@@ -480,12 +581,14 @@ class TileGameTab:
         self.log_fn("[Tile Game] Stop requested — finishing current move...")
         self.stop_btn.config(state="disabled")
 
-    def _run_bot(self, username, password, collect_coins, aura_threshold):
+    def _run_bot(self, username, password, maximize_browser):
         original_stdout = sys.stdout
         sys.stdout = QueueWriter(self.log_fn)
         try:
             with sync_playwright() as playwright:
-                run_bot(playwright, username, password, collect_coins, aura_threshold, self._stop_event)
+                run_bot(playwright, username, password,
+                        self.collect_coins_var, self.aura_var,
+                        maximize_browser, self._stop_event)
         except Exception as e:
             self.log_fn(f"[Tile Game] Fatal error: {e}")
         finally:
