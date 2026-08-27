@@ -16,6 +16,8 @@ ROWS = 6
 COLS = 6
 AURA_SWITCH_TO_AURA = 1
 GEM_7X_AURA_THRESHOLD = 30
+GEM_7X_COOLDOWN_SEC = 60
+GEM_7X_RETRY_SEC = 5
 
 ACCOUNTS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "accounts.json")
 
@@ -102,7 +104,12 @@ def login(page, username, password):
     time.sleep(random.uniform(0.1, 0.3))
     page.get_by_role("button", name="Login").click()
     time.sleep(random.uniform(0.8, 1.2))
-    page.get_by_label("Dismiss").click()
+    # The post-login popup isn't always shown any more — treat it as optional so
+    # a missing "Dismiss" doesn't blow up the whole session.
+    try:
+        page.get_by_label("Dismiss").click(timeout=3000)
+    except Exception:
+        pass
     time.sleep(random.uniform(0.3, 0.6))
 
 
@@ -170,13 +177,39 @@ def switch_mode(page, mode):
         pass
 
 
-def apply_gem_7x_multiplier(page):
+def apply_gem_7x_multiplier(page, state):
+    """Buy the 7x gem multiplier, at most once per cooldown window.
+
+    The multiplier lasts a minute and the button turns into a countdown bar
+    while it runs, so its "7x" label disappears and the locator below matches
+    nothing. Two time guards keep that from turning into a problem:
+
+      * gem_7x_last_applied — a hard lockout so the bot can't re-buy (15 gems a
+        pop) the instant the countdown ends.
+      * gem_7x_last_attempt — backs off failed lookups instead of retrying every
+        loop iteration, which otherwise burns ~500ms per pass on a locator that
+        cannot match while the multiplier is running.
+    """
+    now = time.time()
+    if now - state.get("gem_7x_last_applied", 0.0) < GEM_7X_COOLDOWN_SEC:
+        return False
+    if now - state.get("gem_7x_last_attempt", 0.0) < GEM_7X_RETRY_SEC:
+        return False
+    state["gem_7x_last_attempt"] = now
+
     try:
-        btn = page.get_by_role(
+        btns = page.get_by_role(
             "button",
             name=re.compile(r"(^|\s)7\s*[x×](\s|$)", re.IGNORECASE),
-        ).first
-        if btn.is_visible(timeout=500) and btn.is_enabled():
+        )
+        # The page renders a desktop and a mobile copy of each multiplier button;
+        # only one is interactive, so don't just trust DOM order.
+        for i in range(btns.count()):
+            btn = btns.nth(i)
+            if not (btn.is_visible(timeout=500) and btn.is_enabled()):
+                continue
+            if btn.evaluate("e => getComputedStyle(e).pointerEvents") == "none":
+                continue
             btn.click()
             continue_btn = page.get_by_role(
                 "button",
@@ -185,6 +218,7 @@ def apply_gem_7x_multiplier(page):
             ).first
             continue_btn.click(timeout=3000)
             time.sleep(random.uniform(0.3, 0.6))
+            state["gem_7x_last_applied"] = time.time()
             print("[Coins] Applied gem 7x multiplier")
             return True
     except Exception:
@@ -356,7 +390,7 @@ def play_tile_match(page, state, collect_coins_var, aura_var):
             and aura > GEM_7X_AURA_THRESHOLD
             and not state["gem_7x_applied"]
         ):
-            state["gem_7x_applied"] = apply_gem_7x_multiplier(page)
+            state["gem_7x_applied"] = apply_gem_7x_multiplier(page, state)
 
         possible = get_possible_moves(page)
         if possible is not None and possible == 0:
@@ -375,7 +409,7 @@ def play_tile_match(page, state, collect_coins_var, aura_var):
             print(f"[No move found — streak {no_move_streak}/10]")
             if no_move_streak >= 10:
                 print("[No valid moves for 10 consecutive reads — triggering board reset]")
-                switch_mode(page, "Coins" if (state["collect_coins"] and state["in_coins_mode"]) else "Aura")
+                switch_mode(page, "Coins" if (collect_coins and state["in_coins_mode"]) else "Aura")
                 no_move_streak = 0
             time.sleep(1.0)
             continue
@@ -412,6 +446,8 @@ def run_bot(playwright: Playwright, username, password, collect_coins_var, aura_
         "in_coins_mode":        False,
         "coins_at_coins_start": None,
         "gem_7x_applied":       False,
+        "gem_7x_last_applied":  0.0,
+        "gem_7x_last_attempt":  0.0,
         "cycle_start":          time.time(),
         "stop_event":           stop_event,
     }
